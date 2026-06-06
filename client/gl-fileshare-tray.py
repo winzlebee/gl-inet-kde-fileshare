@@ -11,9 +11,11 @@ Requires: PyQt6, requests, dbus-python
 import json
 import os
 import platform
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -291,10 +293,17 @@ class TransferDialog(QDialog):
         file_size = transfer_info.get("file_size", 0)
         size_str = self._format_size(file_size)
 
-        label = QLabel(
-            f"<b>{from_user}</b> wants to send you a file:\n\n"
-            f"<b>{filename}</b>  ({size_str})"
-        )
+        if filename.lower().endswith(".zip"):
+            label = QLabel(
+                f"<b>{from_user}</b> wants to send you a zip archive:\n\n"
+                f"<b>{filename}</b>  ({size_str})\n\n"
+                f"<i>Contents will be extracted after download.</i>"
+            )
+        else:
+            label = QLabel(
+                f"<b>{from_user}</b> wants to send you a file:\n\n"
+                f"<b>{filename}</b>  ({size_str})"
+            )
         label.setWordWrap(True)
         layout.addWidget(label)
 
@@ -328,12 +337,12 @@ class TransferDialog(QDialog):
 class RecipientPicker(QDialog):
     """Dialog to pick a recipient from online clients."""
 
-    def __init__(self, server_url: str, parent=None):
+    def __init__(self, server_url: str, title: str = "Send File - Select Recipient", parent=None):
         super().__init__(parent)
         self.server_url = server_url
         self.selected_user = None
 
-        self.setWindowTitle("Send File - Select Recipient")
+        self.setWindowTitle(title)
         self.setMinimumSize(300, 250)
 
         layout = QVBoxLayout(self)
@@ -432,9 +441,13 @@ class FileShareTray:
     def _build_menu(self):
         self.menu.clear()
 
-        action_send = QAction("Send File...", self.menu)
-        action_send.triggered.connect(self._send_file)
-        self.menu.addAction(action_send)
+        action_send_files = QAction("Send File(s)...", self.menu)
+        action_send_files.triggered.connect(self._send_files)
+        self.menu.addAction(action_send_files)
+
+        action_send_folder = QAction("Send Folder...", self.menu)
+        action_send_folder.triggered.connect(self._send_folder)
+        self.menu.addAction(action_send_folder)
 
         self.menu.addSeparator()
 
@@ -452,47 +465,123 @@ class FileShareTray:
         action_quit.triggered.connect(self._quit)
         self.menu.addAction(action_quit)
 
-    def _send_file(self):
-        """Send a file flow: pick file → pick recipient → upload."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            None, "Select File to Send", os.path.expanduser("~")
+    def _send_files(self):
+        """Send file(s) flow: pick one or more files → pick recipient → upload."""
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            None, "Select File(s) to Send", os.path.expanduser("~")
         )
-        if not file_path:
+        if not file_paths:
             return
 
-        file_name = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path)
+        self._send_paths(file_paths)
+
+    def _send_folder(self):
+        """Send a folder flow: pick directory → pick recipient → upload."""
+        dir_path = QFileDialog.getExistingDirectory(
+            None, "Select Folder to Send", os.path.expanduser("~")
+        )
+        if not dir_path:
+            return
+
+        self._send_paths([dir_path])
+
+    @staticmethod
+    def _create_zip_bundle(paths: list[str]) -> tuple[str, str]:
+        """Create a zip archive from the given paths.
+
+        Returns (temp_file_path, display_name).
+        """
+        import zipfile
+
+        # Determine a sensible archive name
+        if len(paths) == 1 and os.path.isdir(paths[0]):
+            base_name = os.path.basename(paths[0])
+        elif len(paths) == 1:
+            base_name = os.path.splitext(os.path.basename(paths[0]))[0]
+        else:
+            base_name = "files"
+        archive_name = f"{base_name}.zip"
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+        tmp.close()
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in paths:
+                if os.path.isdir(p):
+                    dir_basename = os.path.basename(p)
+                    for root, dirs, files in os.walk(p):
+                        for f in files:
+                            full = os.path.join(root, f)
+                            arcname = os.path.join(
+                                dir_basename, os.path.relpath(full, p)
+                            )
+                            zf.write(full, arcname)
+                else:
+                    zf.write(p, os.path.basename(p))
+        return tmp.name, archive_name
+
+    def _send_paths(self, paths: list[str]):
+        """Common send logic for both file(s) and folder sends."""
+        # Decide if we need to bundle
+        is_single_file = (len(paths) == 1 and os.path.isfile(paths[0]))
+
+        if is_single_file:
+            file_path = paths[0]
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            tmp_archive = None
+        else:
+            # Bundle into a zip
+            try:
+                tmp_archive, file_name = self._create_zip_bundle(paths)
+                file_path = tmp_archive
+                file_size = os.path.getsize(file_path)
+            except Exception as e:
+                QMessageBox.critical(None, "Error", f"Failed to create archive:\n{e}")
+                return
+
+        is_zip = file_name.lower().endswith(".zip")
 
         # Pick recipient
-        picker = RecipientPicker(self.server_url)
+        picker = RecipientPicker(
+            self.server_url,
+            title="Send Files - Select Recipient" if is_zip else "Send File - Select Recipient",
+        )
         if picker.exec() != QDialog.DialogCode.Accepted or not picker.selected_user:
+            if tmp_archive:
+                os.unlink(tmp_archive)
             return
 
         to_user = picker.selected_user
 
         # Step 1: Create transfer request
         try:
+            req_json = {
+                "from_user": self.username,
+                "to_user": to_user,
+                "filename": file_name,
+                "file_size": file_size,
+            }
             resp = requests.post(
                 f"{self.server_url}/api/send-request",
-                json={
-                    "from_user": self.username,
-                    "to_user": to_user,
-                    "filename": file_name,
-                    "file_size": file_size,
-                },
+                json=req_json,
                 timeout=10,
             )
             if not resp.ok:
                 QMessageBox.critical(None, "Error", f"Server error: {resp.text}")
+                if tmp_archive:
+                    os.unlink(tmp_archive)
                 return
             transfer_id = resp.json()["transfer_id"]
         except Exception as e:
             QMessageBox.critical(None, "Error", f"Failed to create transfer:\n{e}")
+            if tmp_archive:
+                os.unlink(tmp_archive)
             return
 
         # Step 2: Upload file
-        progress = QProgressDialog(f"Uploading {file_name}...", "Cancel", 0, 100)
-        progress.setWindowTitle("Sending File")
+        desc = file_name
+        progress = QProgressDialog(f"Uploading {desc}...", "Cancel", 0, 100)
+        progress.setWindowTitle("Sending")
         progress.setWindowModality(Qt.WindowModality.NonModal)
         progress.show()
 
@@ -507,7 +596,7 @@ class FileShareTray:
                 f"{self.server_url}/api/upload/{transfer_id}",
                 data=file_data,
                 headers={"Content-Type": "application/octet-stream"},
-                timeout=60,
+                timeout=120,
             )
             progress.setValue(100)
 
@@ -515,12 +604,12 @@ class FileShareTray:
                 progress.close()
                 send_kde_notification(
                     "File Sent",
-                    f"'{file_name}' sent to {to_user}.\nWaiting for them to accept...",
+                    f"'{desc}' sent to {to_user}.\nWaiting for them to accept...",
                 )
                 QMessageBox.information(
                     None,
                     "File Sent",
-                    f"'{file_name}' sent to {to_user}.\nThey will be notified and can accept or reject it.",
+                    f"'{desc}' sent to {to_user}.\nThey will be notified and can accept or reject it.",
                 )
             else:
                 progress.close()
@@ -529,6 +618,12 @@ class FileShareTray:
         except Exception as e:
             progress.close()
             QMessageBox.critical(None, "Error", f"Upload failed:\n{e}")
+        finally:
+            if tmp_archive:
+                try:
+                    os.unlink(tmp_archive)
+                except OSError:
+                    pass
 
     def _on_pending_transfer(self, transfer_info: dict):
         """Handle an incoming transfer request."""
@@ -536,6 +631,7 @@ class FileShareTray:
         filename = transfer_info.get("filename", "unknown")
         file_size = transfer_info.get("file_size", 0)
         transfer_id = transfer_info.get("transfer_id", "")
+        is_zip = filename.lower().endswith(".zip")
         size_mb = file_size / (1024 * 1024)
 
         # Blinking attention tray icon
@@ -543,9 +639,10 @@ class FileShareTray:
         self.tray.setToolTip(f"Incoming file from {from_user}!")
 
         # Show notification
+        desc = f"{filename} ({size_mb:.1f} MB)"
         send_kde_notification(
             "Incoming File Transfer",
-            f"{from_user} wants to send you:\n{filename} ({size_mb:.1f} MB)",
+            f"{from_user} wants to send you:\n{desc}",
             actions=[("accept", "Accept"), ("reject", "Reject")],
             timeout=30000,
         )
@@ -555,15 +652,15 @@ class FileShareTray:
         result = dialog.exec()
 
         if result == QDialog.DialogCode.Accepted:
-            self._accept_transfer(transfer_id, filename)
+            self._accept_transfer(transfer_id, filename, is_zip)
         else:
             self._reject_transfer(transfer_id, from_user, filename)
 
         self.tray.setIcon(self.icon_normal)
         self.tray.setToolTip("GL-FileShare - File sharing via router")
 
-    def _accept_transfer(self, transfer_id: str, filename: str):
-        """Accept a transfer and download the file."""
+    def _accept_transfer(self, transfer_id: str, filename: str, is_zip: bool = False):
+        """Accept a transfer and download the file (or extract a zip)."""
         # Step 1: Respond "accept"
         try:
             resp = requests.post(
@@ -578,19 +675,33 @@ class FileShareTray:
             QMessageBox.critical(None, "Error", f"Failed to respond:\n{e}")
             return
 
-        # Step 2: Choose download location
-        save_path, _ = QFileDialog.getSaveFileName(
-            None, "Save File As", os.path.join(self.download_dir, filename)
-        )
-        if not save_path:
-            # User cancelled after accepting — still download to Downloads
-            save_path = os.path.join(self.download_dir, filename)
+        if is_zip:
+            # For zips: choose a directory to extract into
+            extract_dir = QFileDialog.getExistingDirectory(
+                None, "Choose Folder to Extract Into", self.download_dir
+            )
+            if not extract_dir:
+                extract_dir = self.download_dir
+        else:
+            # For single files: choose save location
+            save_path, _ = QFileDialog.getSaveFileName(
+                None, "Save File As", os.path.join(self.download_dir, filename)
+            )
+            if not save_path:
+                # User cancelled after accepting — still download to Downloads
+                save_path = os.path.join(self.download_dir, filename)
 
-        # Step 3: Download file
-        progress = QProgressDialog(f"Downloading {filename}...", "Cancel", 0, 0)
+        # Step 2: Download
+        desc = filename
+        progress = QProgressDialog(f"Downloading {desc}...", "Cancel", 0, 0)
         progress.setWindowTitle("Receiving File")
         progress.setWindowModality(Qt.WindowModality.NonModal)
         progress.show()
+
+        # We always download to a temp file first, then either move or extract
+        tmp_download = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
+        tmp_download.close()
+        tmp_path = tmp_download.name
 
         try:
             resp = requests.get(
@@ -602,7 +713,7 @@ class FileShareTray:
                 total = int(resp.headers.get("Content-Length", 0))
                 progress.setMaximum(100)
                 downloaded = 0
-                with open(save_path, "wb") as f:
+                with open(tmp_path, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=8192):
                         f.write(chunk)
                         downloaded += len(chunk)
@@ -611,15 +722,47 @@ class FileShareTray:
                         QApplication.processEvents()
 
                 progress.close()
-                send_kde_notification(
-                    "File Received",
-                    f"'{filename}' saved to Downloads.",
-                    timeout=5000,
-                )
-                QMessageBox.information(
-                    None, "Download Complete",
-                    f"File saved to:\n{save_path}"
-                )
+
+                if is_zip:
+                    # Extract zip archive
+                    import zipfile
+                    try:
+                        with zipfile.ZipFile(tmp_path, "r") as zf:
+                            # Security: filter out absolute paths and ..
+                            for name in zf.namelist():
+                                if name.startswith("/") or ".." in name:
+                                    QMessageBox.critical(
+                                        None, "Security Error",
+                                        "Archive contains unsafe paths. Aborting."
+                                    )
+                                    return
+                            zf.extractall(path=extract_dir)
+                        send_kde_notification(
+                            "Files Received",
+                            f"'{filename}' extracted to {extract_dir}",
+                            timeout=5000,
+                        )
+                        QMessageBox.information(
+                            None, "Download Complete",
+                            f"Files extracted to:\n{extract_dir}"
+                        )
+                    except zipfile.BadZipFile as e:
+                        QMessageBox.critical(
+                            None, "Error", f"Failed to extract zip:\n{e}"
+                        )
+                else:
+                    # Single file — move into place
+                    shutil.move(tmp_path, save_path)
+                    tmp_path = None  # prevent cleanup
+                    send_kde_notification(
+                        "File Received",
+                        f"'{filename}' saved.",
+                        timeout=5000,
+                    )
+                    QMessageBox.information(
+                        None, "Download Complete",
+                        f"File saved to:\n{save_path}"
+                    )
             else:
                 progress.close()
                 QMessageBox.critical(None, "Error", f"Download failed: HTTP {resp.status_code}")
@@ -627,6 +770,13 @@ class FileShareTray:
         except Exception as e:
             progress.close()
             QMessageBox.critical(None, "Error", f"Download failed:\n{e}")
+        finally:
+            # Clean up temp file if still present
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
         # Clean up transfer on server
         try:
