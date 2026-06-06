@@ -589,7 +589,7 @@ class FileShareTray:
         # Step 3: Download file
         progress = QProgressDialog(f"Downloading {filename}...", "Cancel", 0, 0)
         progress.setWindowTitle("Receiving File")
-        progress.setWindowModality(2)
+        progress.setWindowModality(Qt.WindowModality.NonModal)
         progress.show()
 
         try:
