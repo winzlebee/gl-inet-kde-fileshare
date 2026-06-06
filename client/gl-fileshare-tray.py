@@ -19,6 +19,7 @@ import time
 
 import requests
 from PyQt6.QtCore import QTimer, QThread, pyqtSignal, QPointF
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont, QPolygonF
 from PyQt6.QtWidgets import (
     QApplication,
@@ -368,7 +369,7 @@ class RecipientPicker(QDialog):
 
         if self.list_widget.count() == 0:
             item = QListWidgetItem("No other clients online")
-            item.setFlags(item.flags() & ~0x0020)  # ~Qt.ItemIsSelectable
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.list_widget.addItem(item)
 
     def _on_accept(self):
@@ -492,7 +493,7 @@ class FileShareTray:
         # Step 2: Upload file
         progress = QProgressDialog(f"Uploading {file_name}...", "Cancel", 0, 100)
         progress.setWindowTitle("Sending File")
-        progress.setWindowModality(2)  # Qt.WindowModal = 2
+        progress.setWindowModality(Qt.WindowModality.NonModal)
         progress.show()
 
         try:
