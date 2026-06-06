@@ -1,4 +1,10 @@
-# GL-FileShare
+# GL-Slop-FileShare
+
+## WARNING: This project is vibe-coded. Use at your own risk.
+
+**We just made this to share big files between roommates at a share house with a Gl.iNet network share. We wanted a weird KDE notification thing so nothing else met our needs.**
+
+This was predominantly created with DeepSeek Pro V4. Some cursory checks were made to make sure it didn't nuke my entire router, however please use at your own risk.
 
 **LAN file sharing via your GL.iNet router (Flint 2)**
 
@@ -244,6 +250,7 @@ awaiting_upload → pending → accepted → (downloaded → cleaned up)
 - Port 9090 might be in use: `ssh root@192.168.1.1 netstat -tlnp | grep 9090`
 
 ---
+
 
 ## License
 
