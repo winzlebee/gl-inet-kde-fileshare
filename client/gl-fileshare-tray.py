@@ -20,9 +20,9 @@ import threading
 import time
 
 import requests
-from PyQt6.QtCore import QTimer, QThread, pyqtSignal, QPointF
+from PyQt6.QtCore import QTimer, QThread, pyqtSignal, QPointF, QUrl
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont, QPolygonF
+from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont, QPolygonF, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -46,6 +46,27 @@ POLL_INTERVAL = 3  # seconds between checking for new transfers
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
 
 DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
+
+
+def _show_download_complete(path, *, is_dir):
+    """Show a completion dialog with 'Show Files' (default) and 'Close' buttons."""
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Icon.Information)
+    msg.setWindowTitle("Download Complete")
+    if is_dir:
+        msg.setText(f"Files extracted to:\n{path}")
+    else:
+        msg.setText(f"File saved to:\n{path}")
+
+    btn_show = msg.addButton("Show Files", QMessageBox.ButtonRole.AcceptRole)
+    btn_close = msg.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(btn_show)
+    msg.setEscapeButton(btn_close)
+
+    msg.exec()
+
+    if msg.clickedButton() is btn_show:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
 # ── Generate a simple tray icon (no external file needed) ──────────────────
@@ -742,10 +763,7 @@ class FileShareTray:
                             f"'{filename}' extracted to {extract_dir}",
                             timeout=5000,
                         )
-                        QMessageBox.information(
-                            None, "Download Complete",
-                            f"Files extracted to:\n{extract_dir}"
-                        )
+                        _show_download_complete(extract_dir, is_dir=True)
                     except zipfile.BadZipFile as e:
                         QMessageBox.critical(
                             None, "Error", f"Failed to extract zip:\n{e}"
@@ -759,10 +777,7 @@ class FileShareTray:
                         f"'{filename}' saved.",
                         timeout=5000,
                     )
-                    QMessageBox.information(
-                        None, "Download Complete",
-                        f"File saved to:\n{save_path}"
-                    )
+                    _show_download_complete(save_path, is_dir=False)
             else:
                 progress.close()
                 QMessageBox.critical(None, "Error", f"Download failed: HTTP {resp.status_code}")
