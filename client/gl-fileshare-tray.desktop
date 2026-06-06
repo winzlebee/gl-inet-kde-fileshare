@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=GL-FileShare
+Comment=File sharing via GL.iNet router
+Icon=folder-remote
+Exec=/usr/bin/python3 /opt/gl-fileshare/client/gl-fileshare-tray.py
+Terminal=false
+Categories=Network;FileTransfer;
+StartupNotify=false
+X-KDE-autostart-phase=2
+X-KDE-StartupNotify=false
