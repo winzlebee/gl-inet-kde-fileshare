@@ -45,26 +45,55 @@ network, using the GL.iNet router as a central exchange hub. It consists of:
 
 ### Quick Install
 
-```bash
-# Step 1: Copy files to the router
-scp install-router.sh server/gl-fileshare-server.py root@192.168.1.1:/tmp/
+Run this **from your local machine** (not on the router). The script uses `scp`
+and `ssh` automatically — no manual file copying needed.
 
-# Step 2: SSH in and run the installer
-ssh root@192.168.1.1
-sh /tmp/install-router.sh
+```bash
+# First-time install
+./install-router.sh install
+
+# Update an existing installation (re-copies files and restarts the service)
+./install-router.sh install --update
+
+# Uninstall
+./install-router.sh uninstall
 ```
+
+### All Commands
+
+| Command               | Description                                              |
+|-----------------------|----------------------------------------------------------|
+| `install`             | Fresh install — copies files and starts the service      |
+| `install --update`    | Update an existing installation and restart the service  |
+| `uninstall`           | Remove GL-FileShare from the router                      |
+| `attach`              | SSH in, kill the background service, run interactively   |
+| `status`              | Show the current service status                          |
+| `logs`                | Show the last 30 log entries from the router             |
+| `restart`             | Restart the service                                      |
+| `stop`                | Stop the service                                         |
+| `start`               | Start the service                                        |
 
 ### What the installer does
 
-1. Installs `python3-light` and dependencies via `opkg` (if not already present)
-2. Copies the server script to `/usr/share/gl-fileshare/`
-3. Creates an OpenWrt init.d service at `/etc/init.d/gl-fileshare`
-4. Enables auto-start on boot
-5. Opens port 9090 on the LAN firewall
+1. Copies the server script to the router via `scp`
+2. Installs `python3-light` and dependencies via `opkg` (if not already present)
+3. Installs the server to `/usr/share/gl-fileshare/`
+4. Creates an OpenWrt init.d service at `/etc/init.d/gl-fileshare`
+5. Enables auto-start on boot and starts the service
 
-### Manual management
+### Attach mode (debugging)
 
 ```bash
+# SSH in, kill the background service, and run the server interactively
+# so you see console output on your local terminal
+./install-router.sh attach
+```
+
+### Manual management (via SSH)
+
+```bash
+ssh root@192.168.1.1
+
 # Start / Stop / Restart
 /etc/init.d/gl-fileshare start
 /etc/init.d/gl-fileshare stop
@@ -75,17 +104,13 @@ sh /tmp/install-router.sh
 
 # View logs
 logread | grep gl-fileshare
-
-# Open firewall port manually (if needed)
-iptables -I INPUT -p tcp --dport 9090 -j ACCEPT
 ```
 
 ### Firewall note
 
-The server listens on **port 9090** on the LAN interface. If your router has a
-strict firewall, you may need to open this port. The GL.iNet web UI has a
-Firewall → Port Forwarding section where you can add port 9090/TCP on the
-LAN zone.
+The server listens on **port 9090** on the LAN interface. The GL.iNet web UI
+has a Firewall → Port Forwarding section where you can add port 9090/TCP on the
+LAN zone if needed.
 
 ---
 
